@@ -600,7 +600,8 @@ namespace RevivalMod.Features
         }
 
         /// <summary>
-        /// Consumes a defibrillator item from the player's inventory
+        /// Consumes a defibrillator item from the player's inventory.
+        /// If the item has multiple uses (like a Surv-12), it decrements the resource instead of discarding.
         /// </summary>
         public static void ConsumeDefibItem(Player player, Item defibItem)
         {
@@ -609,10 +610,29 @@ namespace RevivalMod.Features
             }
             try
             {
-                if (player == null)
+                if (player == null || defibItem == null)
                     return;
                 
                 InventoryController inventoryController = player.InventoryController;
+                
+                // Check if item has a MedKitComponent (multi-use medical item like Surv-12)
+                var medKitComponent = defibItem.GetItemComponent<MedKitComponent>();
+                if (medKitComponent != null)
+                {
+                    float resourceToConsume = RevivalModSettings.RESOURCE_HP_TO_CONSUME;
+                    
+                    // If there's enough resource left, just decrement
+                    if (medKitComponent.HpResource > resourceToConsume)
+                    {
+                        medKitComponent.HpResource -= resourceToConsume;
+                        Plugin.LogSource.LogInfo($"Consumed {resourceToConsume} from revival item. Remaining: {medKitComponent.HpResource}/{medKitComponent.MaxHpResource}");
+                        return;
+                    }
+                    // Otherwise fall through to discard the depleted item
+                    Plugin.LogSource.LogInfo($"Revival item depleted, discarding.");
+                }
+                
+                // No resource component or resource depleted - discard the entire item
                 GStruct153 discardResult = InteractionsHandlerClass.Discard(defibItem, inventoryController, true);
 
                 if (discardResult.Failed)

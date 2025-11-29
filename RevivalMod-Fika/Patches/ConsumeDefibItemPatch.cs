@@ -24,9 +24,30 @@ public class ConsumeDefibItemPatch
             if (___player is not FikaPlayer)
                 return;
 
+            if (___defibItem == null)
+                return;
+
             FikaPlayer fikaPlayer = (FikaPlayer)___player;
-            
             InventoryController inventoryController = fikaPlayer.InventoryController;
+            
+            // Check if item has a MedKitComponent (multi-use medical item like Surv-12)
+            var medKitComponent = ___defibItem.GetItemComponent<MedKitComponent>();
+            if (medKitComponent != null)
+            {
+                float resourceToConsume = RevivalModSettings.RESOURCE_HP_TO_CONSUME;
+                
+                // If there's enough resource left, just decrement
+                if (medKitComponent.HpResource > resourceToConsume)
+                {
+                    medKitComponent.HpResource -= resourceToConsume;
+                    Plugin.LogSource.LogInfo($"[Fika] Consumed {resourceToConsume} from revival item. Remaining: {medKitComponent.HpResource}/{medKitComponent.MaxHpResource}");
+                    return;
+                }
+                // Otherwise fall through to discard the depleted item
+                Plugin.LogSource.LogInfo($"[Fika] Revival item depleted, discarding.");
+            }
+            
+            // No resource component or resource depleted - discard the entire item
             GStruct153 discardResult = InteractionsHandlerClass.Discard(___defibItem, inventoryController, true);
 
             if (discardResult.Failed)
