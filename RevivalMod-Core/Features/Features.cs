@@ -601,7 +601,6 @@ namespace RevivalMod.Features
 
         /// <summary>
         /// Consumes a defibrillator item from the player's inventory.
-        /// If the item has multiple uses (like a Surv-12), it decrements the resource instead of discarding.
         /// </summary>
         public static void ConsumeDefibItem(Player player, Item defibItem)
         {
