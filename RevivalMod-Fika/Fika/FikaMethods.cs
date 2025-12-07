@@ -71,37 +71,136 @@ namespace RevivalMod.FikaModule.Common
         private static Harmony _harmonyInstance;
         
         /// <summary>
-        /// Initialize Harmony patches for SAIN ghost mode integration
+        /// Initialize Harmony patches for ghost mode integration (vanilla AI + SAIN)
         /// </summary>
         public static void InitSAINPatches()
         {
+            _harmonyInstance = new Harmony("com.revivalmod.ghostmode");
+            
+            // Patch vanilla EFT enemy-adding methods to prevent ghost mode players from being added
+            InitVanillaAIPatches();
+            
+            // Patch SAIN's IsEnemyValid for additional protection
+            InitSAINEnemyValidPatch();
+        }
+        
+        /// <summary>
+        /// Patches vanilla EFT methods to prevent ghost mode players from being added as enemies
+        /// </summary>
+        private static void InitVanillaAIPatches()
+        {
             try
             {
-                // Try to find SAIN's Enemy.IsEnemyValid method and patch it
+                // Patch BotsGroup.AddEnemy
+                var botsGroupAddEnemy = AccessTools.Method(typeof(BotsGroup), nameof(BotsGroup.AddEnemy));
+                if (botsGroupAddEnemy != null)
+                {
+                    var prefix = typeof(FikaMethods).GetMethod(nameof(AddEnemyPrefix), BindingFlags.NonPublic | BindingFlags.Static);
+                    _harmonyInstance.Patch(botsGroupAddEnemy, prefix: new HarmonyMethod(prefix));
+                    Plugin.LogSource.LogInfo("[GhostMode] Patched BotsGroup.AddEnemy");
+                }
+                
+                // Patch BotMemoryClass.AddEnemy
+                var botMemoryAddEnemy = AccessTools.Method(typeof(BotMemoryClass), nameof(BotMemoryClass.AddEnemy));
+                if (botMemoryAddEnemy != null)
+                {
+                    var prefix = typeof(FikaMethods).GetMethod(nameof(AddEnemyPrefix), BindingFlags.NonPublic | BindingFlags.Static);
+                    _harmonyInstance.Patch(botMemoryAddEnemy, prefix: new HarmonyMethod(prefix));
+                    Plugin.LogSource.LogInfo("[GhostMode] Patched BotMemoryClass.AddEnemy");
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.LogSource.LogWarning($"[GhostMode] Failed to patch vanilla AI: {ex.Message}");
+            }
+        }
+        
+        /// <summary>
+        /// Prefix patch for AddEnemy methods - blocks ghost mode players from being added
+        /// </summary>
+        private static bool AddEnemyPrefix(IPlayer person)
+        {
+            if (person == null)
+                return true;
+                
+            // Block ghost mode players from being added as enemies
+            if (IsPlayerInGhostMode(person.ProfileId))
+            {
+                return false; // Skip the original method
+            }
+            
+            return true;
+        }
+        
+        /// <summary>
+        /// Prefix patch for SAIN's tryAddEnemy - blocks ghost mode players from being added to SAIN's enemy list
+        /// </summary>
+        private static bool SAINTryAddEnemyPrefix(IPlayer enemyPlayer, ref object __result)
+        {
+            if (enemyPlayer == null)
+                return true;
+                
+            // Block ghost mode players from being added as enemies
+            if (IsPlayerInGhostMode(enemyPlayer.ProfileId))
+            {
+                __result = null; // Return null (no enemy added)
+                return false; // Skip the original method
+            }
+            
+            return true;
+        }
+        
+        /// <summary>
+        /// Patches SAIN's enemy tracking methods
+        /// </summary>
+        private static void InitSAINEnemyValidPatch()
+        {
+            try
+            {
+                // Try to find SAIN's EnemyListController.tryAddEnemy method (the actual internal entry point)
+                var enemyListControllerType = Type.GetType("SAIN.SAINComponent.Classes.EnemyClasses.EnemyListController, SAIN");
+                if (enemyListControllerType != null)
+                {
+                    // Patch tryAddEnemy - the internal method ALL enemy additions go through
+                    var tryAddEnemyMethod = enemyListControllerType.GetMethod("tryAddEnemy", 
+                        BindingFlags.NonPublic | BindingFlags.Instance);
+                    
+                    if (tryAddEnemyMethod != null)
+                    {
+                        var prefix = typeof(FikaMethods).GetMethod(nameof(SAINTryAddEnemyPrefix), 
+                            BindingFlags.NonPublic | BindingFlags.Static);
+                        _harmonyInstance.Patch(tryAddEnemyMethod, prefix: new HarmonyMethod(prefix));
+                        Plugin.LogSource.LogInfo("[GhostMode] Patched SAIN EnemyListController.tryAddEnemy");
+                    }
+                    else
+                    {
+                        Plugin.LogSource.LogWarning("[GhostMode] Could not find SAIN tryAddEnemy method");
+                    }
+                }
+                else
+                {
+                    Plugin.LogSource.LogInfo("[GhostMode] SAIN EnemyListController not found, skipping");
+                }
+                
+                // Also patch IsEnemyValid as a backup
                 var sainEnemyType = Type.GetType("SAIN.SAINComponent.Classes.EnemyClasses.Enemy, SAIN");
-                if (sainEnemyType == null)
+                if (sainEnemyType != null)
                 {
-                    Plugin.LogSource.LogInfo("[GhostMode] SAIN not found, skipping SAIN patches");
-                    return;
+                    var isEnemyValidMethod = sainEnemyType.GetMethod("IsEnemyValid", 
+                        BindingFlags.Public | BindingFlags.Static);
+                    
+                    if (isEnemyValidMethod != null)
+                    {
+                        var postfixMethod = typeof(FikaMethods).GetMethod(nameof(IsEnemyValidPostfix), 
+                            BindingFlags.NonPublic | BindingFlags.Static);
+                        _harmonyInstance.Patch(isEnemyValidMethod, postfix: new HarmonyMethod(postfixMethod));
+                        Plugin.LogSource.LogInfo("[GhostMode] Patched SAIN Enemy.IsEnemyValid");
+                    }
                 }
-
-                var isEnemyValidMethod = sainEnemyType.GetMethod("IsEnemyValid", 
-                    BindingFlags.Public | BindingFlags.Static);
-                
-                if (isEnemyValidMethod == null)
+                else
                 {
-                    Plugin.LogSource.LogWarning("[GhostMode] Could not find SAIN Enemy.IsEnemyValid method");
-                    return;
+                    Plugin.LogSource.LogInfo("[GhostMode] SAIN not found, skipping SAIN-specific patches");
                 }
-
-                _harmonyInstance = new Harmony("com.revivalmod.sainghostmode");
-                
-                var postfixMethod = typeof(FikaMethods).GetMethod(nameof(IsEnemyValidPostfix), 
-                    BindingFlags.NonPublic | BindingFlags.Static);
-                
-                _harmonyInstance.Patch(isEnemyValidMethod, postfix: new HarmonyMethod(postfixMethod));
-                
-                Plugin.LogSource.LogInfo("[GhostMode] Successfully patched SAIN Enemy.IsEnemyValid for ghost mode!");
             }
             catch (Exception ex)
             {
