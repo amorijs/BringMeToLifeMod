@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using Comfort.Common;
 using EFT;
+using RevivalMod.Fika;
 using UnityEngine;
 
 namespace RevivalMod.Components
@@ -125,6 +126,27 @@ namespace RevivalMod.Components
         public static List<Player> GetAllAlivePlayerList()
         {
             return Singleton<GameWorld>.Instance.AllAlivePlayersList;
+        }
+
+        private void OnDestroy()
+        {
+            try
+            {
+                // Clean up session state when raid ends
+                Plugin.LogSource.LogInfo("[RMSession] OnDestroy - Cleaning up session state...");
+                
+                CriticalPlayers?.Clear();
+                _instance = null;
+                
+                // Clear ghost mode state via Fika bridge (if available)
+                FikaBridge.ClearGhostModeState();
+                
+                Plugin.LogSource.LogInfo("[RMSession] Session cleanup complete.");
+            }
+            catch (Exception ex)
+            {
+                Plugin.LogSource.LogError($"[RMSession] Error in OnDestroy: {ex.Message}");
+            }
         }
     }
 }

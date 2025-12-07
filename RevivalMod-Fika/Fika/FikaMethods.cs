@@ -13,6 +13,7 @@ using RevivalMod.Features;
 using RevivalMod.FikaModule.Packets;
 using RevivalMod.Helpers;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
@@ -23,7 +24,48 @@ namespace RevivalMod.FikaModule.Common
     internal class FikaMethods
     {
         // Track players currently in ghost mode - accessible for patches
-        public static HashSet<string> PlayersInGhostMode { get; } = new HashSet<string>();
+        // Using ConcurrentDictionary for thread safety (SAIN 3.1+ uses multithreading)
+        // We use a dictionary with dummy values since ConcurrentHashSet doesn't exist
+        // Lazy initialization to avoid potential issues during early assembly loading
+        private static readonly Lazy<ConcurrentDictionary<string, byte>> _playersInGhostMode = 
+            new Lazy<ConcurrentDictionary<string, byte>>(() => new ConcurrentDictionary<string, byte>());
+        
+        /// <summary>
+        /// Thread-safe check if a player is in ghost mode
+        /// </summary>
+        public static bool IsPlayerInGhostMode(string profileId)
+        {
+            return _playersInGhostMode.IsValueCreated && _playersInGhostMode.Value.ContainsKey(profileId);
+        }
+        
+        /// <summary>
+        /// Thread-safe add player to ghost mode
+        /// </summary>
+        public static bool AddPlayerToGhostMode(string profileId) => _playersInGhostMode.Value.TryAdd(profileId, 0);
+        
+        /// <summary>
+        /// Thread-safe remove player from ghost mode
+        /// </summary>
+        public static bool RemovePlayerFromGhostMode(string profileId)
+        {
+            return _playersInGhostMode.IsValueCreated && _playersInGhostMode.Value.TryRemove(profileId, out _);
+        }
+        
+        /// <summary>
+        /// Get count of players in ghost mode (for logging)
+        /// </summary>
+        public static int GhostModePlayerCount => _playersInGhostMode.IsValueCreated ? _playersInGhostMode.Value.Count : 0;
+        
+        /// <summary>
+        /// Clear all ghost mode state (call on raid end)
+        /// </summary>
+        public static void ClearGhostModeState()
+        {
+            if (_playersInGhostMode.IsValueCreated)
+            {
+                _playersInGhostMode.Value.Clear();
+            }
+        }
         
         // Harmony instance for patching SAIN
         private static Harmony _harmonyInstance;
@@ -75,6 +117,9 @@ namespace RevivalMod.FikaModule.Common
             // If already invalid, don't need to check
             if (!__result) return;
             
+            // Quick exit if no one is in ghost mode (avoid reflection overhead)
+            if (GhostModePlayerCount == 0) return;
+            
             try
             {
                 // Get the Player from the PlayerComponent
@@ -84,12 +129,10 @@ namespace RevivalMod.FikaModule.Common
                 var player = playerProp.GetValue(enemyPlayerComp) as Player;
                 if (player == null) return;
                 
-                // Check if this player is in ghost mode
-                if (PlayersInGhostMode.Contains(player.ProfileId))
+                // Check if this player is in ghost mode (thread-safe)
+                if (IsPlayerInGhostMode(player.ProfileId))
                 {
                     __result = false;
-                    // Only log occasionally to avoid spam
-                    // Plugin.LogSource.LogDebug($"[GhostMode] SAIN patch: Marking player {player.ProfileId} as invalid (ghost mode)");
                 }
             }
             catch
@@ -435,18 +478,20 @@ namespace RevivalMod.FikaModule.Common
             // Track ghost mode state - this is used by the SAIN patch to mark enemies as invalid
             if (!packet.isAlive)
             {
-                // Player is entering ghost mode
-                PlayersInGhostMode.Add(packet.playerId);
-                Plugin.LogSource.LogInfo($"[GhostMode] Player {packet.playerId} added to ghost mode list ({PlayersInGhostMode.Count} total in ghost mode)");
+                // Player is entering ghost mode (thread-safe)
+                AddPlayerToGhostMode(packet.playerId);
+                Plugin.LogSource.LogInfo($"[GhostMode] Player {packet.playerId} added to ghost mode list ({GhostModePlayerCount} total in ghost mode)");
                 
-                // Also do immediate removal from bot enemy lists for faster effect
-                RemovePlayerFromAllBotEnemies(targetPlayer, gameWorld);
+                // The Harmony patch on IsEnemyValid will cause SAIN to automatically
+                // detect and remove these enemies on its next update cycle.
+                // We clear vanilla AI immediately since it doesn't have the same automatic cleanup.
+                ClearVanillaAITargeting(targetPlayer, gameWorld);
             }
             else
             {
-                // Player is exiting ghost mode (revived or died)
-                bool wasInGhostMode = PlayersInGhostMode.Remove(packet.playerId);
-                Plugin.LogSource.LogInfo($"[GhostMode] Player {packet.playerId} removed from ghost mode list (was in list: {wasInGhostMode}). Remaining in ghost mode: {PlayersInGhostMode.Count}");
+                // Player is exiting ghost mode (revived or died) - thread-safe
+                bool wasInGhostMode = RemovePlayerFromGhostMode(packet.playerId);
+                Plugin.LogSource.LogInfo($"[GhostMode] Player {packet.playerId} removed from ghost mode list (was in list: {wasInGhostMode}). Remaining in ghost mode: {GhostModePlayerCount}");
                 
                 // Ensure any residual state is cleaned up
                 // Note: For extraction to work properly after death, the player must NOT be in ghost mode
@@ -458,16 +503,15 @@ namespace RevivalMod.FikaModule.Common
         }
 
         /// <summary>
-        /// Removes a player from all bot enemy memory so they stop targeting them.
-        /// This works with both vanilla AI and SAIN.
+        /// Clears vanilla AI targeting for a player. SAIN handles its own cleanup
+        /// via the Harmony patch on IsEnemyValid, so we don't need to call RemoveEnemy directly.
         /// </summary>
-        private static void RemovePlayerFromAllBotEnemies(Player targetPlayer, GameWorld gameWorld)
+        private static void ClearVanillaAITargeting(Player targetPlayer, GameWorld gameWorld)
         {
             if (targetPlayer == null || gameWorld == null)
                 return;
 
             int botsCleared = 0;
-            int sainBotsCleared = 0;
             
             try
             {
@@ -485,19 +529,11 @@ namespace RevivalMod.FikaModule.Common
 
                     try
                     {
-                        // 1. Clear from vanilla AI goal enemy if this is the current target
+                        // Clear from vanilla AI goal enemy if this is the current target
                         if (botOwner.Memory?.GoalEnemy?.Person?.ProfileId == targetPlayer.ProfileId)
                         {
                             botOwner.Memory.GoalEnemy = null;
                             botsCleared++;
-                            Plugin.LogSource.LogInfo($"[GhostMode] Cleared vanilla GoalEnemy for bot {player.ProfileId}");
-                        }
-
-                        // 2. Try to access SAIN's BotComponent and call RemoveEnemy
-                        // SAIN adds a BotComponent to each bot's GameObject
-                        if (TryRemoveFromSAIN(botOwner, targetPlayer.ProfileId))
-                        {
-                            sainBotsCleared++;
                         }
                     }
                     catch (Exception ex)
@@ -506,56 +542,14 @@ namespace RevivalMod.FikaModule.Common
                     }
                 }
 
-                Plugin.LogSource.LogInfo($"[GhostMode] Cleared {botsCleared} vanilla bots, {sainBotsCleared} SAIN bots for player {targetPlayer.ProfileId}");
+                if (botsCleared > 0)
+                {
+                    Plugin.LogSource.LogInfo($"[GhostMode] Cleared vanilla GoalEnemy for {botsCleared} bots targeting {targetPlayer.ProfileId}");
+                }
             }
             catch (Exception ex)
             {
-                Plugin.LogSource.LogError($"[GhostMode] Error in RemovePlayerFromAllBotEnemies: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Attempts to remove the target player from SAIN's enemy tracking via reflection.
-        /// Returns true if SAIN was found and the enemy was removed.
-        /// </summary>
-        private static bool TryRemoveFromSAIN(BotOwner botOwner, string targetProfileId)
-        {
-            try
-            {
-                // Try to get SAIN's BotComponent from the bot's GameObject
-                // SAIN adds this component to each bot
-                var botGameObject = botOwner.gameObject;
-                if (botGameObject == null)
-                    return false;
-
-                // Use reflection to find SAIN.Components.BotComponent
-                var sainBotComponent = botGameObject.GetComponent("BotComponent");
-                if (sainBotComponent == null)
-                    return false;
-
-                // Get the EnemyController property
-                var enemyControllerProp = sainBotComponent.GetType().GetProperty("EnemyController");
-                if (enemyControllerProp == null)
-                    return false;
-
-                var enemyController = enemyControllerProp.GetValue(sainBotComponent);
-                if (enemyController == null)
-                    return false;
-
-                // Call RemoveEnemy(profileId) method
-                var removeEnemyMethod = enemyController.GetType().GetMethod("RemoveEnemy", new[] { typeof(string) });
-                if (removeEnemyMethod == null)
-                    return false;
-
-                removeEnemyMethod.Invoke(enemyController, new object[] { targetProfileId });
-                Plugin.LogSource.LogInfo($"[GhostMode] Called SAIN RemoveEnemy for profile {targetProfileId}");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                // SAIN not installed or reflection failed - this is fine, just use vanilla AI clearing
-                Plugin.LogSource.LogDebug($"[GhostMode] SAIN integration not available: {ex.Message}");
-                return false;
+                Plugin.LogSource.LogError($"[GhostMode] Error in ClearVanillaAITargeting: {ex.Message}");
             }
         }
 

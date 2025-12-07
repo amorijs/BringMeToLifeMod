@@ -1,4 +1,5 @@
-﻿using Comfort.Common;
+﻿using System;
+using Comfort.Common;
 using Fika.Core.Main.Utils;
 using Fika.Core.Networking;
 using HarmonyLib;
@@ -12,20 +13,29 @@ namespace RevivalMod.FikaModule
         // called by the core dll via reflection
         public static void Init()
         {
-            Plugin.LogSource.LogInfo("[Fika Module] Init() called - IsHeadless: " + FikaBackendUtils.IsHeadless);
-            PluginAwake();
-            FikaBridge.PluginEnableEmitted += PluginEnable;
+            try
+            {
+                Plugin.LogSource.LogInfo("[Fika Module] Init() called - IsHeadless: " + FikaBackendUtils.IsHeadless);
+                PluginAwake();
+                FikaBridge.PluginEnableEmitted += PluginEnable;
 
-            FikaBridge.IAmHostEmitted += IAmHost;
-            FikaBridge.GetRaidIdEmitted += GetRaidId;
+                FikaBridge.IAmHostEmitted += IAmHost;
+                FikaBridge.GetRaidIdEmitted += GetRaidId;
 
-            FikaBridge.SendPlayerPositionPacketEmitted += FikaMethods.SendPlayerPositionPacket;
-            FikaBridge.SendRemovePlayerFromCriticalPlayersListPacketEmitted += FikaMethods.SendRemovePlayerFromCriticalPlayersListPacket;
-            FikaBridge.SendReviveMePacketEmitted += FikaMethods.SendReviveMePacket;
-            FikaBridge.SendReviveStartedPacketEmitted += FikaMethods.SendReviveStartedPacket;
-            FikaBridge.SendReviveCanceledPacketEmitted += FikaMethods.SendReviveCanceledPacket;
-            FikaBridge.SendPlayerGhostModePacketEmitted += FikaMethods.SendPlayerGhostModePacket;
-            Plugin.LogSource.LogInfo("[Fika Module] Event handlers wired up");
+                Plugin.LogSource.LogInfo("[Fika Module] Wiring up event handlers...");
+                FikaBridge.SendPlayerPositionPacketEmitted += FikaMethods.SendPlayerPositionPacket;
+                FikaBridge.SendRemovePlayerFromCriticalPlayersListPacketEmitted += FikaMethods.SendRemovePlayerFromCriticalPlayersListPacket;
+                FikaBridge.SendReviveMePacketEmitted += FikaMethods.SendReviveMePacket;
+                FikaBridge.SendReviveStartedPacketEmitted += FikaMethods.SendReviveStartedPacket;
+                FikaBridge.SendReviveCanceledPacketEmitted += FikaMethods.SendReviveCanceledPacket;
+                FikaBridge.SendPlayerGhostModePacketEmitted += FikaMethods.SendPlayerGhostModePacket;
+                FikaBridge.ClearGhostModeStateEmitted += FikaMethods.ClearGhostModeState;
+                Plugin.LogSource.LogInfo("[Fika Module] Event handlers wired up");
+            }
+            catch (Exception ex)
+            {
+                Plugin.LogSource.LogError($"[Fika Module] Error in Init(): {ex}");
+            }
         }
 
         public static void PluginAwake()
