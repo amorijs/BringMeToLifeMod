@@ -117,14 +117,15 @@ namespace RevivalMod.FikaModule.Common
         
         /// <summary>
         /// Prefix patch for AddEnemy methods - blocks ghost mode players from being added
+        /// Uses __0 (positional param) since BotsGroup uses "person" but BotMemoryClass uses "enemy"
         /// </summary>
-        private static bool AddEnemyPrefix(IPlayer person)
+        private static bool AddEnemyPrefix(IPlayer __0)
         {
-            if (person == null)
+            if (__0 == null)
                 return true;
                 
             // Block ghost mode players from being added as enemies
-            if (IsPlayerInGhostMode(person.ProfileId))
+            if (IsPlayerInGhostMode(__0.ProfileId))
             {
                 return false; // Skip the original method
             }
